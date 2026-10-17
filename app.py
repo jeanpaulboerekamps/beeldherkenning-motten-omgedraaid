@@ -1,123 +1,78 @@
-import io, json, os
-from collections import Counter
+import io, json
 import requests
 import streamlit as st
 from PIL import Image
-from engine import describe, summarize, check, annotate, ledger, LIMIT_USD
+from vision import inspect,png
 
-st.set_page_config(page_title='Moth feature discovery v5',layout='wide')
-st.title('🦋 Moth feature discovery — v5')
-st.caption('Single species • photo-only observation • no manual intervention • experimental')
-st.warning('The app finds recurring **descriptive** features, NOT proven species-diagnostic characters. An AI model may still use prior knowledge; every proposed feature is independently checked on held-out images.')
-API='https://api.inaturalist.org/v1/observations'
+st.set_page_config(page_title='Moth visual structures v6',layout='wide')
+st.title('🦋 Moth visual structures — v6')
+st.caption('One species • image measurements only • no OpenAI API • no manual feature selection')
+st.warning('Technical proof of concept. Green outlines show estimated foreground; red circles show local dark regions. These are **not** yet biological or species-diagnostic traits. Backgrounds, shadows and folded wings may produce false detections.')
+
 @st.cache_data(ttl=86400,show_spinner=False)
 def fetch(name,n):
-    r=requests.get(API,params={'taxon_name':name,'quality_grade':'research','photos':'true','per_page':min(200,n*5),'order':'desc','order_by':'observed_on'},timeout=35,headers={'User-Agent':'MothFeatureDiscovery/0.5 educational'})
-    r.raise_for_status();items=[];seen=set()
-    for ob in r.json().get('results',[]):
+    response=requests.get('https://api.inaturalist.org/v1/observations',params={'taxon_name':name,'quality_grade':'research','photos':'true','per_page':min(200,n*5),'order_by':'observed_on','order':'desc'},timeout=35,headers={'User-Agent':'MothVisualStructures/0.6 research'})
+    response.raise_for_status()
+    items=[];users=set()
+    for ob in response.json().get('results',[]):
         if (ob.get('taxon') or {}).get('name','').lower()!=name.lower():continue
         user=(ob.get('user') or {}).get('login')
-        if user in seen:continue
-        photos=ob.get('photos') or []
-        if not photos:continue
-        p=photos[0];url=p.get('url') or ''
-        if not url:continue
-        # Prefer larger image for morphology
-        url=url.replace('square.','large.').replace('medium.','large.')
-        items.append({'id':str(ob['id']),'url':url,'link':'https://www.inaturalist.org/observations/'+str(ob['id']),'credit':p.get('attribution',''),'license':p.get('license_code','unknown')})
-        seen.add(user)
+        if user in users:continue
+        for p in ob.get('photos') or []:
+            url=(p.get('url') or '').replace('square.','large.').replace('medium.','large.')
+            if url:
+                items.append({'id':ob['id'],'url':url,'link':f"https://www.inaturalist.org/observations/{ob['id']}",'credit':p.get('attribution',''),'license':p.get('license_code','unknown')})
+                users.add(user);break
         if len(items)>=n:break
     return items
+
 @st.cache_data(ttl=86400,show_spinner=False)
-def photo(url):
-    r=requests.get(url,timeout=30,headers={'User-Agent':'MothFeatureDiscovery/0.5 educational'});r.raise_for_status()
+def download(url):
+    r=requests.get(url,timeout=25,headers={'User-Agent':'MothVisualStructures/0.6 research'});r.raise_for_status()
+    if len(r.content)>12_000_000:raise ValueError('Photo too large')
     Image.open(io.BytesIO(r.content)).verify()
     return r.content
 
 with st.sidebar:
     st.header('Sample')
-    species=st.text_input('Species',value='Noctua pronuba')
-    n=st.slider('Photos',12,50,24,2)
-    st.caption('12 discovery photos, 12 independent validation photos (when 24 are fetched).')
-    load=st.button('Fetch photographs',type='primary',use_container_width=True)
-    st.divider()
-    d=ledger();st.metric('Local estimated API spend',f"US${d['spent_estimate']:.3f}")
-    st.caption(f'Internal stop: US${LIMIT_USD:.2f}. This is NOT a guaranteed billing cap; it does not know earlier v2–v4 costs or other API usage. Check actual prepaid credit; keep auto-reload OFF.')
+    name=st.text_input('Species',value='Noctua pronuba')
+    n=st.slider('Photos',4,50,16)
+    start=st.button('Fetch and analyze photos',type='primary',use_container_width=True)
+    st.caption('Free computer-vision analysis; no OpenAI key or paid API calls.')
 
-if load:
+if start:
     try:
-        with st.spinner('Fetching images…'):
-            records=fetch(species,n)
-            # Pre-fetch now, so no image fetch occurs during paid analysis
-            good=[]
-            for r in records:
-                try:r['raw']=photo(r['url']);good.append(r)
+        with st.spinner('Fetching and measuring visible image structures…'):
+            records=fetch(name,n)
+            results=[]
+            bar=st.progress(0)
+            for i,r in enumerate(records):
+                try:
+                    result=inspect(download(r['url']))
+                    if result:results.append((r,result))
                 except Exception:pass
-            st.session_state['sample']={'species':species,'items':good}
-            st.session_state.pop('result',None)
-    except Exception as e:st.error(str(e))
-sample=st.session_state.get('sample')
-if not sample or sample['species']!=species:
-    st.info('Choose one species and click **Fetch photographs**. No API analysis is performed during fetching.')
-    st.stop()
-items=sample['items'];st.write(f'**{species}: {len(items)} usable downloads**')
-with st.expander('Source photos and licensing',expanded=False):
-    for r in items:st.markdown(f"[{r['id']}]({r['link']}) — {r['credit']} — {r['license']}")
-if len(items)<12:
-    st.error('At least 12 photos are needed. Increase sample size or retry.');st.stop()
-if st.button('Discover visible features automatically',type='primary',disabled=not bool(st.secrets.get('OPENAI_API_KEY',os.getenv('OPENAI_API_KEY','')))):
-    key=st.secrets.get('OPENAI_API_KEY',os.getenv('OPENAI_API_KEY',''))
-    try:
-        # Keep API usage small. Strict held-out partition: discovery images never used for verification.
-        discovery=items[:min(12,len(items)//2)]
-        validation=items[len(discovery):len(discovery)+min(12,len(items)-len(discovery))]
-        progress=st.progress(0,text='Describing photos separately…')
-        desc=[]
-        for j,r in enumerate(discovery):
-            desc.append(describe(key,r['id'],r['raw']))
-            progress.progress((j+1)/(len(discovery)+1)*0.4,text=f'Photo {j+1}/{len(discovery)}')
-        candidates=summarize(key,desc)[:3]
-        progress.progress(0.46,text='Validating candidates on unseen photographs…')
-        verified=[]
-        total=max(1,len(candidates)*len(validation));done=0
-        for c in candidates:
-            checks=[]
-            for r in validation:
-                checks.append(check(key,c,r['id'],r['raw']))
-                done+=1;progress.progress(0.46+0.52*done/total,text=f'Validation {done}/{total}')
-            yes=[x for x in checks if x.get('state')=='yes']
-            no=[x for x in checks if x.get('state')=='no']
-            unknown=[x for x in checks if x.get('state') not in ('yes','no')]
-            # Conservative acceptance: at least 5 positive photos and >=70% among visible states.
-            supported=len(yes)>=5 and len(yes)/(len(yes)+len(no) or 1)>=0.7
-            verified.append({'candidate':c,'checks':checks,'yes':len(yes),'no':len(no),'unknown':len(unknown),'supported':supported})
-        st.session_state['result']={'descriptions':desc,'verified':verified,'species':species,'sample_ids':[r['id'] for r in items]}
-        progress.progress(1.,text='Finished')
-    except Exception as e:st.error(f'Analysis stopped: {e}. Completed requests may still incur API charges.')
-result=st.session_state.get('result')
-if result and result['species']==species:
-    st.subheader('Observed recurring features')
-    if not result['verified']:st.info('No recurring candidate features found. No annotation generated.')
-    for entry in result['verified']:
-        c=entry['candidate'];st.markdown(f"**{c.get('name','Unnamed feature')}** — {'Supported descriptive feature' if entry['supported'] else 'Not sufficiently supported'}")
-        st.write(c.get('description',''))
-        st.caption(f"Held-out: yes {entry['yes']}, no {entry['no']}, unknown {entry['unknown']}. Unknown is not counted as absent.")
-    supported=[v for v in result['verified'] if v['supported']]
-    if supported:
-        # Choose one held-out photo with the most located, verified positive features.
-        best=None;best_feats=[]
-        for r in items:
-            feats=[]
-            for v in supported:
-                ch=next((x for x in v['checks'] if x['id']==r['id'] and x.get('state')=='yes' and isinstance(x.get('point'),list)),None)
-                if ch:feats.append({'point':ch['point'],'name':v['candidate'].get('name'),'description':v['candidate'].get('description')})
-            if len(feats)>len(best_feats):best,best_feats=r,feats
-        if best and best_feats:
-            img=annotate(best['raw'],best_feats)
-            st.subheader('Automatically annotated candidate card')
-            st.image(img,use_container_width=True)
-            st.caption(f"Source: {best['link']} • {best['credit']} • License: {best['license']}. Annotation positions are AI estimates, not pixel-verified.")
-            st.download_button('Download PNG',img,file_name='moth-features-v5.png',mime='image/png')
-    else:st.info('No features met the preset consistency rule. The app will not draw misleading arrows.')
-    export={k:v for k,v in result.items() if k!='raw'}
-    st.download_button('Download analysis JSON',json.dumps(export,indent=2,ensure_ascii=False),file_name='moth-feature-analysis-v5.json',mime='application/json')
+                bar.progress((i+1)/len(records))
+            st.session_state['analysis']={'species':name,'results':results}
+    except Exception as e:st.error(f'Unable to fetch photos: {e}')
+
+analysis=st.session_state.get('analysis')
+if not analysis or analysis['species']!=name:
+    st.info('Click **Fetch and analyze photos** to run the free proof of concept.');st.stop()
+results=analysis['results']
+st.write(f'**{len(results)} usable segmentations** (of {n} requested). A segmentation is not necessarily correct.')
+if not results:st.stop()
+ratios=[v['ratio'] for _,v in results]
+st.metric('Median foreground bounding-box elongation',f'{sorted(ratios)[len(ratios)//2]:.2f}×')
+st.caption('This number describes the detected silhouette, not the anatomical length of a forewing. Counts of dark regions are sensitive to shadows, exposure and background.')
+export=[]
+for i in range(0,len(results),3):
+    cols=st.columns(3)
+    for col,(record,r) in zip(cols,results[i:i+3]):
+        with col:
+            st.image(r['image'],use_container_width=True)
+            st.caption(f"[Observation {record['id']}]({record['link']}) · {len(r['spots'])} local dark regions · silhouette ratio {r['ratio']}×")
+            st.caption(f"{record['credit']} · license {record['license']}")
+            st.download_button('Download overlay',png(r['image']),file_name=f"moth_{record['id']}_overlay.png",mime='image/png',key=f"download_{i}_{record['id']}")
+        export.append({'observation_id':record['id'],'observation_url':record['link'],'credit':record['credit'],'license':record['license'],'silhouette_ratio':r['ratio'],'foreground_coverage':r['coverage'],'local_dark_regions':r['spots']})
+st.download_button('Download measurements JSON',json.dumps({'species':name,'method':'GrabCut central foreground + local contrast components; experimental','observations':export},indent=2),file_name='moth_visual_measurements_v6.json',mime='application/json')
+st.info('Next research gate: confirm that the green outlines actually follow the moths and that red marks are on wings rather than background. Only then is it meaningful to compare normalized positions across specimens. This version deliberately does not invent recurring anatomical traits.')
