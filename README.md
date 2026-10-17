@@ -1,18 +1,24 @@
-# Moth comparison lab
+# Moth Comparison Lab v2
 
-Streamlit prototype for side-by-side inspection of research-grade iNaturalist moth observations, exploratory color statistics, blinded human character notes, and annotated recognition cards.
+Streamlit application for experimental **automatic** comparison of *Noctua comes* and *N. interjecta* from iNaturalist research-grade photos.
 
-## Run locally
+## Deploy
+Upload `app.py`, `ai_discovery.py`, `requirements.txt` to the repository root; select `app.py` as the Streamlit entry point. Do not upload `__pycache__` or API credentials.
 
-```bash
-pip install -r requirements.txt
-streamlit run app.py
+In Streamlit Community Cloud → App settings → Secrets add:
+
+```toml
+OPENAI_API_KEY = "sk-..."
 ```
 
-## Deploy on Streamlit Community Cloud
+Fetch photos, then choose **Automatic AI discovery** → **Discover distinguishing features automatically**. The app uses at most 20 images per species for the AI comparison, even if more are fetched for visual review.
 
-Upload `app.py` and `requirements.txt` to a GitHub repository. Select `app.py` as the entry point in Streamlit Community Cloud.
+## Cost and safety
 
-## Scientific limitations
+The user's experiment target is **€5 total**. The app has an intentionally conservative internal **US$4 ceiling**, with a US$1 reservation for each attempted analysis and an approximate token-based usage meter. This is **not a guaranteed or durable spending cap**: Streamlit session state can reset, other API calls are not counted, prices and FX change, and API billing can differ from local estimates. Configure API project budget/alerts at platform.openai.com and monitor actual usage. Do not rely on the app alone to enforce €5.
 
-This version does **not** automatically infer reliable anatomical diagnostic features. Simple image statistics are exploratory and can be confounded by lighting and backgrounds. Photo annotation is manual. Confirm candidate characters against multiple individuals and literature after recording blind hypotheses. Research Grade is not infallible. Respect individual photo licenses and credits.
+No AI request is made by merely fetching photos. Only clicking the AI button incurs OpenAI API usage. One AI request is sent per click. Model: `gpt-4.1-mini`. The estimate uses conservative internal rates (not official price quotes) of $1 / 1M input tokens and $6 / 1M output tokens.
+
+## Scientific caveats
+
+The model sees two labeled contact sheets and receives no species descriptions. Results are tentative, not validated diagnostic characters. Photo backgrounds, misidentifications, variability, perspective and lighting can mislead. The coordinates used for annotations are approximate, and may be wrong. Photos and attributions come from iNaturalist; check each photo's license before publication.

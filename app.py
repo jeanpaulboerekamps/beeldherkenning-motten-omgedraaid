@@ -9,6 +9,8 @@ import requests
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont
 
+from ai_discovery import contact_sheet, call_vision, render_card
+
 st.set_page_config(page_title='Moth comparison lab', layout='wide')
 st.title('🦋 Moth comparison lab')
 st.caption('Blind photo comparison • iNaturalist research-grade observations • experimental feature discovery')
@@ -67,7 +69,7 @@ with st.sidebar:
     st.header('Sample')
     species_a=st.text_input('Species A',DEFAULT[0])
     species_b=st.text_input('Species B',DEFAULT[1])
-    n=st.slider('Observations per species',5,40,20,5)
+    n=st.slider('Observations per species',5,100,20,5)
     st.caption('One photograph per observer where possible. Photos are fetched only when needed and cached for 24 hours.')
     load=st.button('Fetch photographs',type='primary',use_container_width=True)
 if load:
@@ -84,7 +86,61 @@ for name,items in records.items():
     st.write(f'**{name}: {len(items)} photographs**')
     if len(items)<5:st.warning('Small sample: results may not be representative.')
 
-tab1,tab2,tab3=st.tabs(['Photo comparison','Blind notes & statistics','Annotated recognition card'])
+tab0,tab1,tab2,tab3=st.tabs(['Automatic AI discovery','Photo comparison','Blind notes & statistics','Manual card (legacy)'])
+with tab0:
+    st.subheader('Automatic visual feature discovery — experimental')
+    st.caption('The model compares two labeled grids of up to 20 photographs each. No field-guide descriptions are supplied. AI-generated traits are hypotheses, not validated identification characters.')
+    st.warning('€5 is a spending target, NOT an enforceable API billing cap. Streamlit can restart and usage elsewhere is not counted. Set account/project limits and alerts in your OpenAI API dashboard. The app stops new requests based on a conservative local estimate.')
+    try:
+        secret_key=st.secrets.get('OPENAI_API_KEY','')
+    except Exception:
+        secret_key=''
+    if not secret_key:
+        st.info('Add OPENAI_API_KEY to Streamlit App settings → Secrets. Never put the key in GitHub.')
+    st.write('**Experiment budget:** €5 maximum target; app-internal conservative ceiling **US$4** (extra buffer for currency fluctuations).')
+    spent=st.session_state.get('ai_spent_usd',0.0)
+    st.metric('Estimated AI usage in this session',f'US${spent:.4f}')
+    st.caption('This counter resets if the server/session restarts and does not include other API activity. Prices are deliberately overestimated for planning, but actual billing can differ.')
+    names=list(records)
+    eligible=bool(secret_key) and len(names)==2 and all(len(records[x])>=5 for x in names) and spent<3.0
+    if st.button('Discover distinguishing features automatically',type='primary',disabled=not eligible):
+        try:
+            with st.spinner('Building photo grids and comparing patterns with AI…'):
+                a,aa=contact_sheet(records[names[0]],get_image,'A')
+                b,bb=contact_sheet(records[names[1]],get_image,'B')
+                # One call only. Conservatively reserve $1 in local session budget.
+                st.session_state['ai_spent_usd']=spent+1.0
+                result,usage=call_vision(secret_key,a,b,names[0],names[1])
+                st.session_state['ai_spent_usd']=spent+max(usage['estimated_usd'],0.01)
+                st.session_state['ai_result']={'data':result,'usage':usage,'items':{names[0]:aa,names[1]:bb},'names':names}
+                st.session_state['ai_sheets']=(a,b)
+        except Exception as e:
+            st.error(f'Analysis failed: {e}. US$1 remains reserved in the local budget for this attempt; check actual API usage before retrying.')
+    if 'ai_result' in st.session_state:
+        r=st.session_state['ai_result']; data=r['data']
+        st.write('**Visual comparison:**',data.get('summary',''))
+        st.write('**Limitations:**',data.get('limitations',''))
+        st.caption(f"Model: {r['usage']['model']} · input tokens: {r['usage']['input_tokens']} · output tokens: {r['usage']['output_tokens']}")
+        feats=data.get('features',[])
+        if not feats: st.info('The AI did not find sufficiently repeatable differences. This is a valid experimental result.')
+        for i,f in enumerate(feats[:3],1):
+            st.markdown(f"**{i}. {f.get('species','')} — {f.get('description','')}**")
+            st.write('Compared with other species:',f.get('contrast',''))
+            st.caption(f"Confidence: {f.get('confidence','low')} · photo numbers: {f.get('supporting_photo_numbers',[])} · exceptions: {f.get('exceptions','')}")
+        st.download_button('Download AI findings (JSON)',json.dumps(r,indent=2,default=str),file_name='ai_visual_findings.json',mime='application/json')
+        st.subheader('Automatically annotated candidate cards')
+        for name in r['names']:
+            ff=[f for f in feats if f.get('species')==name]
+            if not ff:continue
+            # Choose image with most features supported, preserving photo numbering.
+            itemlist=r['items'][name]
+            best=max(itemlist,key=lambda item:sum(item['index'] in f.get('supporting_photo_numbers',[]) for f in ff))
+            try:
+                card=render_card(get_image(best['url']),name,ff,best['index'],best.get('attribution') or best.get('observer',''))
+                st.image(card,caption=f"{name} · {best['link']} · License: {best['license']} · provisional locations",use_container_width=True)
+                st.download_button(f'Download {name} PNG',card,file_name=name.replace(' ','_')+'_experimental.png',mime='image/png')
+            except Exception as e:st.warning(f'Could not create card for {name}: {e}')
+        st.caption('Locations are approximate AI guesses on a contact sheet, not verified pixel-accurate landmarks. Recheck photo licenses before publication.')
 with tab1:
     st.write('Compare independent individuals. Click the observation links to check identification and image context.')
     left,right=st.columns(2)
