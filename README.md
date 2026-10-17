@@ -1,24 +1,19 @@
-# Moth Comparison Lab v2
+# Moth Comparison Lab v3
 
-Streamlit application for experimental **automatic** comparison of *Noctua comes* and *N. interjecta* from iNaturalist research-grade photos.
+Streamlit application for a **fully automated** experiment in distinguishing two moth species by photographs alone. No field guide is provided to the model, and no manual annotation or acceptance is required.
 
-## Deploy
-Upload `app.py`, `ai_discovery.py`, `requirements.txt` to the repository root; select `app.py` as the Streamlit entry point. Do not upload `__pycache__` or API credentials.
+## Setup
 
-In Streamlit Community Cloud → App settings → Secrets add:
+Upload `app.py`, `ai_pipeline.py`, `requirements.txt` to your GitHub repository root. Set the Streamlit main file to `app.py`. In Streamlit app settings → Secrets enter:
 
 ```toml
-OPENAI_API_KEY = "sk-..."
+OPENAI_API_KEY = "your-key-here"
 ```
 
-Fetch photos, then choose **Automatic AI discovery** → **Discover distinguishing features automatically**. The app uses at most 20 images per species for the AI comparison, even if more are fetched for visual review.
+Fetch at least 16 photographs per species. Press **Run fully automatic discovery and validation** once. The workflow uses 8 discovery photos and 8 independent held-out photos per species. It examines images in small groups, proposes up to three binary traits, independently tests each trait on held-out images, and only annotates traits passing a pre-specified criterion (≥6 evaluable per species, ≥75% yes in positive group, ≤25% yes in negative group). The localization step is still approximate; the generated cards are labeled experimental.
 
-## Cost and safety
+## Spending safeguards
 
-The user's experiment target is **€5 total**. The app has an intentionally conservative internal **US$4 ceiling**, with a US$1 reservation for each attempted analysis and an approximate token-based usage meter. This is **not a guaranteed or durable spending cap**: Streamlit session state can reset, other API calls are not counted, prices and FX change, and API billing can differ from local estimates. Configure API project budget/alerts at platform.openai.com and monitor actual usage. Do not rely on the app alone to enforce €5.
+The goal is €5 for the entire experiment, **not a guaranteed billing cap**. The application reserves US$0.18 for each attempted model call in `data/ai_budget_v3.json` and stops once the cumulative reservation would exceed US$4. This file persists across sessions only while Streamlit's local filesystem survives. Redeploys/restarts can reset it. API charges from other apps are not counted. Set your own billing controls, keep auto-reload off, and check actual remaining credit before rerunning. Previous v2 API usage is not imported into this ledger. A full run may use up to 20 model calls, reserving up to US$3.60. API charges can differ from these reservations. There is no guarantee that the complete run stays below €5 in all circumstances.
 
-No AI request is made by merely fetching photos. Only clicking the AI button incurs OpenAI API usage. One AI request is sent per click. Model: `gpt-4.1-mini`. The estimate uses conservative internal rates (not official price quotes) of $1 / 1M input tokens and $6 / 1M output tokens.
-
-## Scientific caveats
-
-The model sees two labeled contact sheets and receives no species descriptions. Results are tentative, not validated diagnostic characters. Photo backgrounds, misidentifications, variability, perspective and lighting can mislead. The coordinates used for annotations are approximate, and may be wrong. Photos and attributions come from iNaturalist; check each photo's license before publication.
+No automated claim is a verified diagnostic character; iNaturalist Research Grade labels can be incorrect, and camera angles, sexual dimorphism, variation, and wear affect conclusions. Photo licenses must be reviewed before redistribution.
