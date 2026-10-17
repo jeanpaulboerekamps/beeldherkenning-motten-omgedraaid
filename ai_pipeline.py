@@ -5,47 +5,71 @@ from PIL import Image, ImageDraw
 from openai import OpenAI
 
 MODEL = 'gpt-4.1-mini'
-# Conservative planning rates, NOT guaranteed API rates.
+# Deliberately conservative per-million-token estimates; adjust if model pricing changes.
 IN_RATE, OUT_RATE = 3.0, 12.0
-LIMIT = 4.0
-RESERVE_PER_CALL = 0.18
+LIMIT = 4.0  # USD app-side stop, below the user's total $5 prepaid credit
+RESERVE_PER_CALL = 0.18  # Temporary in-flight reservation, not permanent expenditure
 LOCK = threading.RLock()
-LEDGER = Path('data/ai_budget_v3.json')
+LEDGER = Path('data/ai_budget_v4.json')
+LEGACY = Path('data/ai_budget_v3.json')
 
 def ledger():
     with LOCK:
-        try: return json.loads(LEDGER.read_text())
-        except (OSError, ValueError): return {'reserved_usd':0.,'estimated_usd':0.,'calls':0}
+        try:
+            return json.loads(LEDGER.read_text())
+        except (OSError, ValueError):
+            try:
+                old=json.loads(LEGACY.read_text())
+                # Carry forward only actual estimated token costs, not unused reservations.
+                return {'estimated_usd':float(old.get('estimated_usd',0)),
+                        'calls':int(old.get('calls',0)), 'in_flight_usd':0.,
+                        'legacy_reserved_usd':float(old.get('reserved_usd',0))}
+            except (OSError, ValueError):
+                return {'estimated_usd':0.,'calls':0,'in_flight_usd':0.}
 
-def charge(amount, estimate=None):
+def save_ledger(d):
+    LEDGER.parent.mkdir(exist_ok=True)
+    tmp=LEDGER.with_suffix('.tmp')
+    tmp.write_text(json.dumps(d,indent=2))
+    os.replace(tmp,LEDGER)
+
+def reserve():
     with LOCK:
         d=ledger()
-        if estimate is None:
-            if d['reserved_usd']+amount > LIMIT: raise RuntimeError('Internal budget exhausted; no API request sent.')
-            d['reserved_usd']+=amount
-        else:
-            # Keep reservations even after successful requests, to avoid underestimating usage.
-            d['estimated_usd']+=estimate
-            d['calls']+=1
-        LEDGER.parent.mkdir(exist_ok=True)
-        tmp=LEDGER.with_suffix('.tmp');tmp.write_text(json.dumps(d,indent=2));os.replace(tmp,LEDGER)
-        return d
+        if d['estimated_usd']+d.get('in_flight_usd',0)+RESERVE_PER_CALL > LIMIT:
+            raise RuntimeError('Internal budget guard reached; no API request sent.')
+        d['in_flight_usd']=d.get('in_flight_usd',0)+RESERVE_PER_CALL
+        save_ledger(d)
+
+def settle(estimate=None):
+    with LOCK:
+        d=ledger()
+        d['in_flight_usd']=max(0.,d.get('in_flight_usd',0)-RESERVE_PER_CALL)
+        # When an API call fails, charge the full reservation as a precaution.
+        d['estimated_usd']+=RESERVE_PER_CALL if estimate is None else max(0.,estimate)
+        d['calls']+=1
+        save_ledger(d)
 
 def jpeg_data(raw):
-    im=Image.open(io.BytesIO(raw)).convert('RGB');im.thumbnail((900,900))
+    im=Image.open(io.BytesIO(raw)).convert('RGB');im.thumbnail((1200,1200))
     buf=io.BytesIO();im.save(buf,format='JPEG',quality=82)
     return 'data:image/jpeg;base64,'+base64.b64encode(buf.getvalue()).decode()
 
 def ask(key, prompt, photos, max_tokens=1100):
-    charge(RESERVE_PER_CALL)
+    reserve()
     client=OpenAI(api_key=key,timeout=130,max_retries=0)
     content=[{'type':'text','text':prompt}]
     for label,raw in photos:
         content.extend([{'type':'text','text':f'Photo ID: {label}'},{'type':'image_url','image_url':{'url':jpeg_data(raw),'detail':'high'}}])
-    result=client.chat.completions.create(model=MODEL,temperature=0,max_tokens=max_tokens,response_format={'type':'json_object'},messages=[{'role':'user','content':content}])
-    u=result.usage
-    charge(0,estimate=(u.prompt_tokens*IN_RATE+u.completion_tokens*OUT_RATE)/1e6)
-    return json.loads(result.choices[0].message.content)
+    try:
+        result=client.chat.completions.create(model=MODEL,temperature=0,max_tokens=max_tokens,response_format={'type':'json_object'},messages=[{'role':'user','content':content}])
+        u=result.usage
+        settle((u.prompt_tokens*IN_RATE+u.completion_tokens*OUT_RATE)/1e6)
+        return json.loads(result.choices[0].message.content)
+    except Exception:
+        # Do not charge twice when parsing fails after successful settlement.
+        if 'result' not in locals(): settle(None)
+        raise
 
 TRAITS='''Use ONLY observable moth anatomy and markings; do not use field guides, memorized species diagnoses, or background. Each trait must refer to a precise visible wing region. Ignore lighting and general hue unless reliably intrinsic. If not visible say unknown. Return JSON only.'''
 

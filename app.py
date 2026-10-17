@@ -88,17 +88,18 @@ for name,items in records.items():
 
 tab0,tab1,tab2,tab3=st.tabs(['Automatic AI discovery','Photo comparison','Blind notes & statistics','Manual card (legacy)'])
 with tab0:
-    st.subheader('Fully automatic feature discovery — v3')
+    st.subheader('Fully automatic feature discovery — v4')
     st.caption('Individual images → candidate traits → independent held-out test → automatic annotated cards. No human review or field-guide text.')
-    st.warning('The €5 goal is NOT a hard API billing cap. The app reserves a conservative US$ amount in a local file, but Streamlit storage may reset on redeploy and other API usage is not counted. Keep auto-reload OFF. Do not rerun without checking your actual API balance.')
+    st.warning('The €5 goal is NOT a hard API billing cap. The meter is an estimate and cannot read your real OpenAI balance. Streamlit storage may reset on redeploy. Keep auto-reload OFF and verify the real balance before every new run.')
     try: secret_key=st.secrets.get('OPENAI_API_KEY','')
     except Exception: secret_key=''
     if not secret_key: st.info('Add OPENAI_API_KEY in Streamlit Secrets.')
     d=ledger()
-    st.metric('Locally reserved budget',f"US${d['reserved_usd']:.2f} / US${LIMIT:.2f}")
-    st.caption(f"Estimated token costs: US${d['estimated_usd']:.4f}; requests recorded: {d['calls']}. Reservations remain spent even after errors, for safety.")
+    st.metric('Estimated cumulative API cost (local)',f"US${d['estimated_usd']:.4f} / US${LIMIT:.2f}")
+    st.caption(f"Recorded requests: {d['calls']}; pending reserve: US${d.get('in_flight_usd',0):.2f}. This is NOT the actual account balance. Past deployments and other apps may not be counted.")
     names=list(records)
-    eligible=bool(secret_key) and len(names)==2 and all(len(records[x])>=16 for x in names) and d['reserved_usd']+20*RESERVE_PER_CALL<=LIMIT
+    eligible=bool(secret_key) and len(names)==2 and all(len(records[x])>=16 for x in names) and d['estimated_usd']+d.get('in_flight_usd',0)+RESERVE_PER_CALL<=LIMIT
+    st.caption('Before running, check the actual prepaid credit on platform.openai.com. This app cannot enforce a €5 account-wide ceiling.')
     if st.button('Run fully automatic discovery and validation',type='primary',disabled=not eligible):
         try:
             with st.spinner('Analyzing and validating individual photographs…'):
@@ -108,7 +109,7 @@ with tab0:
                 status.success('Analysis finished')
         except Exception as e:
             st.error(f'Analysis stopped: {e}. Check the actual API balance before trying again.')
-    if not eligible: st.info('Requires 16 photos per species, a saved API key and sufficient remaining local budget for a complete run.')
+    if not eligible: st.info('Requires 16 photos per species, a saved API key and enough local estimated budget for the next request.')
     if 'v3_result' in st.session_state:
         r=st.session_state['v3_result']
         good=[c for c in r['candidates'] if c.get('accepted')]
